@@ -39,7 +39,25 @@ def parse_args():
     return parser.parse_args()
 
 
-args = parse_args()
+def load_secrets(args):
+    if not pl.Path(args.secrets_filename).exists():
+        raise FileNotFoundError(f"Secrets file not found at: {args.secrets_filename}")
+
+    with open(args.secrets_filename, 'r') as file:
+        secrets = json.load(file)
+
+    # Validate that all required keys exist
+    for key in ["rtsp_user", "rtsp_pw", "spaces_key", "spaces_access_key"]:
+        if key not in secrets:
+            raise KeyError(f"{key} is missing from the secrets file.")
+
+    return secrets
+
+
+def main():
+    args = parse_args()
+
+    secrets = load_secrets(args)
 
 # Create a VideoCapture object
 cap = cv2.VideoCapture("rtsp://admin:FnJmtZsAsZ9.@192.168.1.25/Preview_02_main")
