@@ -5,43 +5,72 @@ import datetime as dt
 import json
 import pathlib as pl
 import shutil
+import types
 
 
-def parse_args():
-    parser = argparse.ArgumentParser()
+def std_msg(now_exec_local, error_exit, msg):
+    print(f"{now_exec_local.strftime("%m/%d/%Y-%H:%M:%S")} " +
+          ("ERROR: " if error_exit else ": ") + msg)
+    if error_exit:
+        exit(1)
+
+
+class CustomArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, now_exec_local, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.now_exec_local = now_exec_local  # Store the extra information
+
+    def error(self, message):
+        std_msg(self.now_exec_local, True, message)
+
+
+def parse_args(now_exec_local):
+    parser = CustomArgumentParser(now_exec_local=now_exec_local)
+
     parser.add_argument("secrets_filename",
+                        type=str,
                         help="JSON file with secrets: rtsp_user, rtsp_pw, spaces_key, spaces_access_key")
 
     parser.add_argument("--host",
+                        type=str,
                         help="rtsp host name",
                         default="192.168.1.25")
     parser.add_argument("--stream_selector",
+                        type=str,
                         help="rtsp stream name/selector",
                         default="Preview_02_main")
 
     parser.add_argument("--region",
+                        type=str,
                         help="spaces region name",
                         default="sfo3")
     parser.add_argument("--bucket",
+                        type=str,
                         help="spaces bucket name",
                         default="stake_images")
     parser.add_argument("--upload_image_name",
+                        type=str,
                         help="spaces name for uploaded image file",
                         default="mazama/latest/stake_image.jpg")
     parser.add_argument("--upload_metadata_name",
+                        type=str,
                         help="spaces name for uploaded metadata file",
                         default="mazama/latest/stake_image.json")
 
-    parser.add_argument("--image_name_prefix", help="local image filename prefix")
-    parser.add_argument("--image_name_path", help="local image file path relative to script location")
-    parser.add_argument("--metadata_name", help="local metadata filename")
-    parser.add_argument("--metadata_name_path", help="local metadata file path relative to script location")
+    parser.add_argument("--image_name_prefix",
+                        help="local image filename prefix")
+    parser.add_argument("--image_name_path",
+                        help="local image file path relative to script location")
+    parser.add_argument("--metadata_name",
+                        help="local metadata filename")
+    parser.add_argument("--metadata_name_path",
+                        help="local metadata file path relative to script location")
     return parser.parse_args()
 
 
-def load_secrets(args):
+def load_secrets(now_exec_local, args):
     if not pl.Path(args.secrets_filename).exists():
-        raise FileNotFoundError(f"Secrets file not found at: {args.secrets_filename}")
+        std_msg(now_exec_local, True, f"Secrets file not found at: {args.secrets_filename}")
 
     with open(args.secrets_filename, 'r') as file:
         secrets = json.load(file)
@@ -49,15 +78,50 @@ def load_secrets(args):
     # Validate that all required keys exist
     for key in ["rtsp_user", "rtsp_pw", "spaces_key", "spaces_access_key"]:
         if key not in secrets:
-            raise KeyError(f"{key} is missing from the secrets file.")
+            std_msg(now_exec_local, True, f"{key} is missing from the secrets file.")
 
-    return secrets
+    return types.SimpleNamespace(**secrets)
+
+
+def capture_image(now_exec_local, args, secrets):
+    # Create a VideoCapture object
+    rtsp_url = f"rtsp://{secrets.rtsp_user}:{secrets.rtsp_pw}@{args.host}/{args.stream_selector}"
+    cap = cv2.VideoCapture(rtsp_url)
+
+    # Check if the camera opened successfully
+    if not cap.isOpened():
+        std_msg(now_exec_local, True, f"Can not open stream:{rtsp_url}")
+
+    ret0 = cap.grab()
+    ret1 = cap.grab()
+    ret2 = cap.grab()
+
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    now_local = dt.datetime.now()
+
+    ret3, frame = cap.retrieve()
+
+    # Release the capture
+    cap.release()
+
+    if not (ret0 and ret1 and ret2 and ret3):
+        std_msg(now_exec_local, True, "Can't receive frame")
+
+    return types.SimpleNamespace(frame=frame, now_utc=now_utc, now_local=now_local)
 
 
 def main():
-    args = parse_args()
+    now_exec_local = dt.datetime.now()
+    args = parse_args(now_exec_local)
+    secrets = load_secrets(now_exec_local, args)
+    capture = capture_image(now_exec_local, args, secrets)
+    print(args)
+    print(secrets)
+    print(secrets.rtsp_user)
+    std_msg(now_exec_local, True, "Hi")
+    exit(0)
 
-    secrets = load_secrets(args)
+main()
 
 # Create a VideoCapture object
 cap = cv2.VideoCapture("rtsp://admin:FnJmtZsAsZ9.@192.168.1.25/Preview_02_main")
