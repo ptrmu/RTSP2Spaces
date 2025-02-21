@@ -56,7 +56,7 @@
 
         async function fetchJsonData() {
             try {
-                const response = await fetch(jsonUrl);
+                const response = await fetch(jsonUrl + `?t=${new Date().getTime()}`);
                 if (!response.ok) {
                     throw new Error(`HTTP error! Status: ${response.status}`);
                 }
@@ -106,9 +106,11 @@
                 clearTimeout(fetchTimer);
             }
 
-            // Schedule the next fetch when the data expires. Add 3 seconds incase clocks are out of sync.
-            const timeUntilInvalid = Math.max(validUntil - new Date(), 0.0) + 3000; // Time remaining in milliseconds
-            console.log(`Scheduling next fetch in ${timeUntilInvalid / 1000} seconds`);
+            // Schedule the next fetch when the data expires. Add 5 seconds incase clocks are out of sync.
+            const now = new Date();
+            const timeUntilInvalid = Math.max(validUntil - now, 0.0) + 5000; // Time remaining in milliseconds
+            console.log(`Scheduling next fetch in ${timeUntilInvalid / 1000} seconds ` +
+                        `at ${Math.floor((now.getTime() + timeUntilInvalid) / 1000)}`);
             fetchTimer = setTimeout(fetchJsonData, timeUntilInvalid); // Schedule fetch when the data expires
         }
 
