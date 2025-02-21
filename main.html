@@ -106,16 +106,10 @@
                 clearTimeout(fetchTimer);
             }
 
-            const now = new Date();
-            const timeUntilInvalid = validUntil - now; // Time remaining in milliseconds
-
-            if (timeUntilInvalid > 0) {
-                console.log(`Scheduling next fetch in ${timeUntilInvalid / 1000} seconds`);
-                fetchTimer = setTimeout(fetchJsonData, timeUntilInvalid); // Schedule fetch when the data expires
-            } else {
-                console.log('Data is already invalid, fetching new data immediately');
-                fetchJsonData(); // Fetch immediately if the data is already invalid
-            }
+            // Schedule the next fetch when the data expires. Add 3 seconds incase clocks are out of sync.
+            const timeUntilInvalid = Math.max(validUntil - new Date(), 0.0) + 3000; // Time remaining in milliseconds
+            console.log(`Scheduling next fetch in ${timeUntilInvalid / 1000} seconds`);
+            fetchTimer = setTimeout(fetchJsonData, timeUntilInvalid); // Schedule fetch when the data expires
         }
 
         // Perform the initial fetch on page load
