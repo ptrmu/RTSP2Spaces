@@ -8,7 +8,19 @@ import shutil
 import types
 
 
-def std_msg(now_exec_local, error_exit, msg):
+class StdMsg:
+    def __init__(self):
+        self.app_name = pl.Path(__file__).stem
+        self.now_exec_local = dt.datetime.now()
+
+    def __call__(self, error_exit, msg):
+        print(f"{self.app_name} {self.now_exec_local.strftime("%m/%d/%Y-%H:%M:%S")} " +
+              ("ERROR: " if error_exit else ": ") + msg)
+        if error_exit:
+            exit(1)
+
+
+def std_msgx(now_exec_local, error_exit, msg):
     print(f"{now_exec_local.strftime("%m/%d/%Y-%H:%M:%S")} " +
           ("ERROR: " if error_exit else ": ") + msg)
     if error_exit:
@@ -16,16 +28,16 @@ def std_msg(now_exec_local, error_exit, msg):
 
 
 class CustomArgumentParser(argparse.ArgumentParser):
-    def __init__(self, *args, now_exec_local, **kwargs):
+    def __init__(self, *args, std_msg, **kwargs):
         super().__init__(*args, **kwargs)
-        self.now_exec_local = now_exec_local  # Store the extra information
+        self.std_msg = std_msg  # Store the extra information
 
     def error(self, message):
-        std_msg(self.now_exec_local, True, message)
+        self.std_msg(True, message)
 
 
-def parse_args(now_exec_local):
-    parser = CustomArgumentParser(now_exec_local=now_exec_local)
+def parse_args(std_msg):
+    parser = CustomArgumentParser(std_msg=std_msg)
 
     parser.add_argument("secrets_filename",
                         type=str,
@@ -58,19 +70,17 @@ def parse_args(now_exec_local):
                         default="mazama/latest/stake_image.json")
 
     parser.add_argument("--image_name_prefix",
-                        help="local image filename prefix")
-    parser.add_argument("--image_name_path",
-                        help="local image file path relative to script location")
+                        help="local image filename prefix",
+                        default='files/mazama_stake_')
     parser.add_argument("--metadata_name",
-                        help="local metadata filename")
-    parser.add_argument("--metadata_name_path",
-                        help="local metadata file path relative to script location")
+                        help="local metadata filename",
+                        default='mazama_stake')
     return parser.parse_args()
 
 
-def load_secrets(now_exec_local, args):
+def load_secrets(std_msg, args):
     if not pl.Path(args.secrets_filename).exists():
-        std_msg(now_exec_local, True, f"Secrets file not found at: {args.secrets_filename}")
+        std_msg(True, f"Secrets file not found at: {args.secrets_filename}")
 
     with open(args.secrets_filename, 'r') as file:
         secrets = json.load(file)
@@ -78,26 +88,26 @@ def load_secrets(now_exec_local, args):
     # Validate that all required keys exist
     for key in ["rtsp_user", "rtsp_pw", "spaces_key", "spaces_access_key"]:
         if key not in secrets:
-            std_msg(now_exec_local, True, f"{key} is missing from the secrets file.")
+            std_msg(True, f"{key} is missing from the secrets file.")
 
     return types.SimpleNamespace(**secrets)
 
 
-def capture_image(now_exec_local, args, secrets):
+def capture_image(std_msg, args, secrets):
     # Create a VideoCapture object
     rtsp_url = f"rtsp://{secrets.rtsp_user}:{secrets.rtsp_pw}@{args.host}/{args.stream_selector}"
     cap = cv2.VideoCapture(rtsp_url)
 
     # Check if the camera opened successfully
     if not cap.isOpened():
-        std_msg(now_exec_local, True, f"Can not open stream:{rtsp_url}")
+        std_msg(True, f"Can not open stream:{rtsp_url}")
 
     ret0 = cap.grab()
     ret1 = cap.grab()
     ret2 = cap.grab()
 
-    now_utc = dt.datetime.now(dt.timezone.utc)
-    now_local = dt.datetime.now()
+    time_utc = dt.datetime.now(dt.timezone.utc)
+    time_local = dt.datetime.now()
 
     ret3, frame = cap.retrieve()
 
@@ -105,20 +115,33 @@ def capture_image(now_exec_local, args, secrets):
     cap.release()
 
     if not (ret0 and ret1 and ret2 and ret3):
-        std_msg(now_exec_local, True, "Can't receive frame")
+        std_msg(True, "Can't receive frame")
 
-    return types.SimpleNamespace(frame=frame, now_utc=now_utc, now_local=now_local)
+    return types.SimpleNamespace(frame=frame,
+                                 time_utc=time_utc,
+                                 time_local=time_local)
+
+
+def create_filenames(std_msg, args, secrets, capture):
+    capture_local_filename = capture.time_local.strftime("%Y%m%d%H%M")
+    script_dir = pl.Path(__file__).resolve().parent
+
+    return types.SimpleNamespace(
+        local_image=script_dir.joinpath(args.image_name_prefix + capture_local_filename + ".jpg"),
+        local_metadata=script_dir.joinpath(args.metadata_name + ".json"),
+    )
 
 
 def main():
-    now_exec_local = dt.datetime.now()
-    args = parse_args(now_exec_local)
-    secrets = load_secrets(now_exec_local, args)
-    capture = capture_image(now_exec_local, args, secrets)
-    print(args)
-    print(secrets)
-    print(secrets.rtsp_user)
-    std_msg(now_exec_local, True, "Hi")
+    std_msg = StdMsg()
+    args = parse_args(std_msg)
+    secrets = load_secrets(std_msg, args)
+    capture = capture_image(std_msg, args, secrets)
+    filenames = create_filenames(std_msg, args, secrets, capture)
+    # save_image(std_msg, args, filenames, capture)
+    # save_metadata(std_msg, args, filenames)
+    # upload_to_spaces(std_msg, args, secrets, filenames)
+    std_msg(True, "Hi")
     exit(0)
 
 main()
