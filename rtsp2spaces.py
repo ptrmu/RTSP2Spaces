@@ -4,7 +4,6 @@ import cv2
 import datetime as dt
 import json
 import pathlib as pl
-import shutil
 import types
 
 
@@ -59,7 +58,7 @@ def parse_args(std_msg):
     parser.add_argument("--bucket",
                         type=str,
                         help="spaces bucket name",
-                        default="stake_images")
+                        default="stake-images")
     parser.add_argument("--upload_image_name",
                         type=str,
                         help="spaces name for uploaded image file",
@@ -122,14 +121,70 @@ def capture_image(std_msg, args, secrets):
                                  time_local=time_local)
 
 
-def create_filenames(std_msg, args, secrets, capture):
+def create_filenames(args, capture):
     capture_local_filename = capture.time_local.strftime("%Y%m%d%H%M")
     script_dir = pl.Path(__file__).resolve().parent
 
     return types.SimpleNamespace(
         local_image=script_dir.joinpath(args.image_name_prefix + capture_local_filename + ".jpg"),
         local_metadata=script_dir.joinpath(args.metadata_name + ".json"),
+        spaces_image_url=f"https://{args.bucket}.{args.region}.digitaloceanspaces.com/{args.upload_image_name}",
+        spaces_metadata_url=f"https://{args.bucket}.{args.region}.digitaloceanspaces.com/{args.upload_metadata_name}",
+        spaces_endpoint_url=f"https://{args.region}.digitaloceanspaces.com"
     )
+
+
+def save_image(filenames, capture):
+    shape = capture.frame.shape
+    height = shape[0]
+    width = shape[1]
+    new_width = height if height < width else width
+    origin = max(0, int(width / 2.0 - new_width / 2.0))
+
+    cv2.imwrite(str(filenames.local_image), capture.frame[:, origin:origin + new_width])
+
+
+def save_metadata(filenames, capture):
+    metadata = {
+        "image": {
+            "url": filenames.spaces_image_url,
+            "alt": "Mazama Snow Stake"
+        },
+        "timestamp": int(capture.time_utc.timestamp()),
+        "valid_until": int((capture.time_utc + dt.timedelta(seconds=300)).timestamp())
+    }
+    with open(filenames.local_metadata, 'w') as json_file:
+        json.dump(metadata, json_file, indent=4)
+
+
+def upload_to_spaces(std_msg, args, secrets, filenames):
+    client = boto3.client('s3',
+                          region_name=args.region,
+                          endpoint_url=filenames.spaces_endpoint_url,
+                          aws_access_key_id=secrets.spaces_key,
+                          aws_secret_access_key=secrets.spaces_access_key)
+
+    try:
+        client.upload_file(filenames.local_image, args.bucket, args.upload_image_name,
+                           ExtraArgs={"ContentType": "image/jpeg",
+                                      "CacheControl": "max-age=60",
+                                      "ACL": "public-read"})
+
+    except Exception as e0:
+        std_msg(True, f"Error occurred uploading image. Check Space name, etc ({e0})")
+
+    try:
+        client.upload_file(filenames.local_metadata, args.bucket, args.upload_metadata_name,
+                           ExtraArgs={"ContentType": "application/json",
+                                      "CacheControl": "max-age=60",
+                                      "ACL": "public-read"})
+
+    except Exception as e1:
+        std_msg(True, f"Error occurred uploading metadata. Check Space name, etc ({e1})", e1)
+        exit(1)
+
+    client.close()
+    std_msg(False, "Success")  # A threading crash happens more often if this msg is moved out of this method
 
 
 def main():
@@ -137,106 +192,104 @@ def main():
     args = parse_args(std_msg)
     secrets = load_secrets(std_msg, args)
     capture = capture_image(std_msg, args, secrets)
-    filenames = create_filenames(std_msg, args, secrets, capture)
-    # save_image(std_msg, args, filenames, capture)
-    # save_metadata(std_msg, args, filenames)
-    # upload_to_spaces(std_msg, args, secrets, filenames)
-    std_msg(True, "Hi")
-    exit(0)
+    filenames = create_filenames(args, capture)
+    save_image(filenames, capture)
+    save_metadata(filenames, capture)
+    upload_to_spaces(std_msg, args, secrets, filenames)
+
 
 main()
 
-# Create a VideoCapture object
-cap = cv2.VideoCapture("rtsp://admin:FnJmtZsAsZ9.@192.168.1.25/Preview_02_main")
-
-# Check if the camera opened successfully
-if not cap.isOpened():
-    print("Cannot open camera")
-    exit()
-
-ret0 = cap.grab()
-ret1 = cap.grab()
-ret2 = cap.grab()
-
-now_utc = dt.datetime.now(dt.timezone.utc)
-now_local = dt.datetime.now()
-
-ret3, frame = cap.retrieve()
-
-# Release the capture
-cap.release()
-
-now_local_str = now_local.strftime("%m/%d/%Y-%H:%M:%S")
-now_local_filename = now_local.strftime("%Y%m%d%H%M")
-
-if not (ret0 and ret1 and ret2 and ret3):
-    print(now_local_str, "Can't receive frame (stream end?). Exiting ...")
-    exit(1)
-
-# Find where this script is running from
-script_dir = pl.Path(__file__).resolve().parent
-local_file = script_dir.joinpath("stake_image.jpg")
-save_file = script_dir.joinpath("files", "mazama_stake_" + now_local_filename + ".jpg")
-metadata_file = script_dir.joinpath("stake_image.json")
-
-shape = frame.shape
-height = shape[0]
-width = shape[1]
-new_width = height if height < width else width
-origin = max(0, int(width / 2.0 - new_width / 2.0))
-
-# Save the image and make a copy with a unique filename
-cv2.imwrite(str(local_file), frame[:, origin:origin+new_width])
-shutil.copy2(local_file, save_file)
-
-key_id = str("DO00KD6F2YQCMVAWFF8N")
-secret_access_key = str("bategMqsRz+Ht4TKxPeVGleJII4C/n3VZLsC0kDxxDQ")
-region_name = "sfo3"
-bucket_name = "stake-images"
-image_upload_name = "mazama/latest/stake_image.jpg"
-metadata_upload_name = "mazama/latest/stake_image.json"
-
-endpoint_url = 'https://' + str(region_name) + '.digitaloceanspaces.com'
-image_base_url = 'https://' + bucket_name + "." + str(region_name) + '.digitaloceanspaces.com'
-
-# Create the metadata file
-metadata = {
-    "image": {
-        "url": image_base_url + "/" + image_upload_name,
-        "alt": "Mazama Snow Stake"
-    },
-    "timestamp": int(now_utc.timestamp()),
-    "valid_until": int((now_utc + dt.timedelta(seconds=300)).timestamp())
-}
-with open(metadata_file, 'w') as json_file:
-    json.dump(metadata, json_file, indent=4)
-
-# Upload the image and metadata files to spaces
-session = boto3.session.Session()
-client = session.client('s3',
-                        region_name=str(region_name),
-                        endpoint_url=endpoint_url,
-                        aws_access_key_id=key_id,
-                        aws_secret_access_key=secret_access_key)
-
-
-try:
-    client.upload_file(local_file, bucket_name, image_upload_name,
-                       ExtraArgs={"ContentType": "image/jpeg", "CacheControl": "max-age=60", "ACL": "public-read"})
-
-except Exception as e:
-    print(now_local_str, "Error occurred uploading image. Check Space name, etc", e)
-    exit(1)
-
-try:
-    client.upload_file(metadata_file, bucket_name, metadata_upload_name,
-                       ExtraArgs={"ContentType": "application/json", "CacheControl": "max-age=60", "ACL": "public-read"})
-
-except Exception as e:
-    print(now_local_str, "Error occurred uploading metadata. Check Space name, etc", e)
-    exit(1)
-
-print(now_local_str, "Success")
-
-
-
+#
+# # Create a VideoCapture object
+# cap = cv2.VideoCapture("rtsp://admin:FnJmtZsAsZ9.@192.168.1.25/Preview_02_main")
+#
+# # Check if the camera opened successfully
+# if not cap.isOpened():
+#     print("Cannot open camera")
+#     exit()
+#
+# ret0 = cap.grab()
+# ret1 = cap.grab()
+# ret2 = cap.grab()
+#
+# now_utc = dt.datetime.now(dt.timezone.utc)
+# now_local = dt.datetime.now()
+#
+# ret3, frame = cap.retrieve()
+#
+# # Release the capture
+# cap.release()
+#
+# now_local_str = now_local.strftime("%m/%d/%Y-%H:%M:%S")
+# now_local_filename = now_local.strftime("%Y%m%d%H%M")
+#
+# if not (ret0 and ret1 and ret2 and ret3):
+#     print(now_local_str, "Can't receive frame (stream end?). Exiting ...")
+#     exit(1)
+#
+# # Find where this script is running from
+# script_dir = pl.Path(__file__).resolve().parent
+# local_file = script_dir.joinpath("stake_image.jpg")
+# save_file = script_dir.joinpath("files", "mazama_stake_" + now_local_filename + ".jpg")
+# metadata_file = script_dir.joinpath("stake_image.json")
+#
+# shape = frame.shape
+# height = shape[0]
+# width = shape[1]
+# new_width = height if height < width else width
+# origin = max(0, int(width / 2.0 - new_width / 2.0))
+#
+# # Save the image and make a copy with a unique filename
+# cv2.imwrite(str(local_file), frame[:, origin:origin+new_width])
+# shutil.copy2(local_file, save_file)
+#
+# key_id = str("DO00KD6F2YQCMVAWFF8N")
+# secret_access_key = str("bategMqsRz+Ht4TKxPeVGleJII4C/n3VZLsC0kDxxDQ")
+# region_name = "sfo3"
+# bucket_name = "stake-images"
+# image_upload_name = "mazama/latest/stake_image.jpg"
+# metadata_upload_name = "mazama/latest/stake_image.json"
+#
+# endpoint_url = 'https://' + str(region_name) + '.digitaloceanspaces.com'
+# image_base_url = 'https://' + bucket_name + "." + str(region_name) + '.digitaloceanspaces.com'
+#
+# # Create the metadata file
+# metadata = {
+#     "image": {
+#         "url": image_base_url + "/" + image_upload_name,
+#         "alt": "Mazama Snow Stake"
+#     },
+#     "timestamp": int(now_utc.timestamp()),
+#     "valid_until": int((now_utc + dt.timedelta(seconds=300)).timestamp())
+# }
+# with open(metadata_file, 'w') as json_file:
+#     json.dump(metadata, json_file, indent=4)
+#
+# # Upload the image and metadata files to spaces
+# session = boto3.session.Session()
+# client = session.client('s3',
+#                         region_name=str(region_name),
+#                         endpoint_url=endpoint_url,
+#                         aws_access_key_id=key_id,
+#                         aws_secret_access_key=secret_access_key)
+#
+#
+# try:
+#     client.upload_file(local_file, bucket_name, image_upload_name,
+#                        ExtraArgs={"ContentType": "image/jpeg", "CacheControl": "max-age=60", "ACL": "public-read"})
+#
+# except Exception as e:
+#     print(now_local_str, "Error occurred uploading image. Check Space name, etc", e)
+#     exit(1)
+#
+# try:
+#     client.upload_file(metadata_file, bucket_name, metadata_upload_name,
+#                        ExtraArgs={"ContentType": "application/json", "CacheControl": "max-age=60", "ACL": "public-read"})
+#
+# except Exception as e:
+#     print(now_local_str, "Error occurred uploading metadata. Check Space name, etc", e)
+#     exit(1)
+#
+# print(now_local_str, "Success")
+#
