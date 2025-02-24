@@ -1,5 +1,7 @@
 import argparse
-import boto3
+import boto3 as b3
+import botocore.config as bc
+import botocore.exceptions as be
 import cv2
 import datetime as dt
 import json
@@ -17,13 +19,6 @@ class StdMsg:
               ("ERROR: " if error_exit else ": ") + msg)
         if error_exit:
             exit(1)
-
-
-def std_msgx(now_exec_local, error_exit, msg):
-    print(f"{now_exec_local.strftime("%m/%d/%Y-%H:%M:%S")} " +
-          ("ERROR: " if error_exit else ": ") + msg)
-    if error_exit:
-        exit(1)
 
 
 class CustomArgumentParser(argparse.ArgumentParser):
@@ -74,51 +69,53 @@ def parse_args(std_msg):
     parser.add_argument("--metadata_name",
                         help="local metadata filename",
                         default='mazama_stake')
+
     return parser.parse_args()
 
 
-def load_secrets(std_msg, args):
-    if not pl.Path(args.secrets_filename).exists():
-        std_msg(True, f"Secrets file not found at: {args.secrets_filename}")
+class Secrets:
+    def __init__(self, std_msg, args):
+        if not pl.Path(args.secrets_filename).exists():
+            std_msg(True, f"Secrets file not found at: {args.secrets_filename}")
 
-    with open(args.secrets_filename, 'r') as file:
-        secrets = json.load(file)
+        with open(args.secrets_filename, 'r') as file:
+            secrets = json.load(file)
 
-    # Validate that all required keys exist
-    for key in ["rtsp_user", "rtsp_pw", "spaces_key", "spaces_access_key"]:
-        if key not in secrets:
-            std_msg(True, f"{key} is missing from the secrets file.")
+        # Validate that all required keys exist
+        for key in ["rtsp_user", "rtsp_pw", "spaces_key", "spaces_access_key"]:
+            if key not in secrets:
+                std_msg(True, f"{key} is missing from the secrets file.")
 
-    return types.SimpleNamespace(**secrets)
+        self.rtsp_user = secrets["rtsp_user"]
+        self.rtsp_pw = secrets["rtsp_pw"]
+        self.spaces_key = secrets["spaces_key"]
+        self.spaces_access_key = secrets["spaces_access_key"]
 
 
-def capture_image(std_msg, args, secrets):
-    # Create a VideoCapture object
-    rtsp_url = f"rtsp://{secrets.rtsp_user}:{secrets.rtsp_pw}@{args.host}/{args.stream_selector}"
-    cap = cv2.VideoCapture(rtsp_url)
+class Capture:
+    def __init__(self, std_msg, args, secrets: Secrets):
+        # Create a VideoCapture object
+        rtsp_url = f"rtsp://{secrets.rtsp_user}:{secrets.rtsp_pw}@{args.host}/{args.stream_selector}"
+        cap = cv2.VideoCapture(rtsp_url)
 
-    # Check if the camera opened successfully
-    if not cap.isOpened():
-        std_msg(True, f"Can not open stream:{rtsp_url}")
+        # Check if the camera opened successfully
+        if not cap.isOpened():
+            std_msg(True, f"Can not open stream:{rtsp_url}")
 
-    ret0 = cap.grab()
-    ret1 = cap.grab()
-    ret2 = cap.grab()
+        ret0 = cap.grab()
+        ret1 = cap.grab()
+        ret2 = cap.grab()
 
-    time_utc = dt.datetime.now(dt.timezone.utc)
-    time_local = dt.datetime.now()
+        self.time_utc = dt.datetime.now(dt.timezone.utc)
+        self.time_local = dt.datetime.now()
 
-    ret3, frame = cap.retrieve()
+        ret3, self.frame = cap.retrieve()
 
-    # Release the capture
-    cap.release()
+        # Release the capture
+        cap.release()
 
-    if not (ret0 and ret1 and ret2 and ret3):
-        std_msg(True, "Can't receive frame")
-
-    return types.SimpleNamespace(frame=frame,
-                                 time_utc=time_utc,
-                                 time_local=time_local)
+        if not (ret0 and ret1 and ret2 and ret3):
+            std_msg(True, "Can't receive frame")
 
 
 def create_filenames(args, capture):
@@ -154,44 +151,58 @@ def save_metadata(filenames, capture):
         "valid_until": int((capture.time_utc + dt.timedelta(seconds=300)).timestamp())
     }
     with open(filenames.local_metadata, 'w') as json_file:
+        # noinspection PyTypeChecker
         json.dump(metadata, json_file, indent=4)
 
 
-def upload_to_spaces(std_msg, args, secrets, filenames):
-    client = boto3.client('s3',
-                          region_name=args.region,
-                          endpoint_url=filenames.spaces_endpoint_url,
-                          aws_access_key_id=secrets.spaces_key,
-                          aws_secret_access_key=secrets.spaces_access_key)
+def upload_to_spaces(std_msg, args, secrets: Secrets, filenames):
+    if not all([args.bucket, args.upload_image_name,
+                args.upload_metadata_name, secrets.spaces_key,
+                filenames.local_image, filenames.local_metadata]):
+        std_msg(True, "Missing required parameters for upload_to_spaces().")
+        return
+
+    config = bc.Config(retries={'max_attempts': 3, 'mode': 'adaptive'})
 
     try:
-        client.upload_file(filenames.local_image, args.bucket, args.upload_image_name,
-                           ExtraArgs={"ContentType": "image/jpeg",
-                                      "CacheControl": "max-age=60",
-                                      "ACL": "public-read"})
+        client = b3.client('s3',
+                           region_name=args.region,
+                           endpoint_url=filenames.spaces_endpoint_url,
+                           aws_access_key_id=secrets.spaces_key,
+                           aws_secret_access_key=secrets.spaces_access_key,
+                           config=config)
 
-    except Exception as e0:
-        std_msg(True, f"Error occurred uploading image. Check Space name, etc ({e0})")
+        try:
+            client.upload_file(filenames.local_image, args.bucket, args.upload_image_name,
+                               ExtraArgs={"ContentType": "image/jpeg",
+                                          "CacheControl": "max-age=60",
+                                          "ACL": "public-read"})
 
-    try:
-        client.upload_file(filenames.local_metadata, args.bucket, args.upload_metadata_name,
-                           ExtraArgs={"ContentType": "application/json",
-                                      "CacheControl": "max-age=60",
-                                      "ACL": "public-read"})
+        except be.ClientError as e:
+            std_msg(True, f"Error occurred uploading image: ({e})")
 
-    except Exception as e1:
-        std_msg(True, f"Error occurred uploading metadata. Check Space name, etc ({e1})", e1)
-        exit(1)
+        try:
+            client.upload_file(filenames.local_metadata, args.bucket, args.upload_metadata_name,
+                               ExtraArgs={"ContentType": "application/json",
+                                          "CacheControl": "max-age=60",
+                                          "ACL": "public-read"})
 
-    client.close()
-    std_msg(False, "Success")  # A threading crash happens more often if this msg is moved out of this method
+        except be.ClientError as e1:
+            std_msg(True, f"Error occurred uploading metadata: ({e1})", e1)
+
+        client.close()
+
+    except Exception as e:
+        std_msg(True, f"Error initializing S3 client: {e}")
+
+    std_msg(False, f"Success! Image uploaded: {filenames.local_image}")
 
 
 def main():
     std_msg = StdMsg()
     args = parse_args(std_msg)
-    secrets = load_secrets(std_msg, args)
-    capture = capture_image(std_msg, args, secrets)
+    secrets = Secrets(std_msg, args)
+    capture = Capture(std_msg, args, secrets)
     filenames = create_filenames(args, capture)
     save_image(filenames, capture)
     save_metadata(filenames, capture)
