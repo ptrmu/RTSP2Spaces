@@ -7,23 +7,6 @@ import datetime as dt
 import json
 import logging
 import pathlib as pl
-import types
-
-
-# class StdMsg:
-#     def __init__(self):
-#         self.app_name = pl.Path(__file__).stem
-#         self.now_exec_local = dt.datetime.now()
-#
-#     def __call__(self, error_exit, msg):
-#         print(f"{self.app_name} {self.now_exec_local.strftime("%m/%d/%Y-%H:%M:%S")} " +
-#               ("ERROR: " if error_exit else ": ") + msg)
-#         if error_exit:
-#             exit(1)
-#
-# import logging
-# import pathlib as pl
-# import datetime as dt
 
 
 class StdMsg:
@@ -91,6 +74,11 @@ class CustomArgumentParser(ap.ArgumentParser):
 def parse_args(std_msg: StdMsg) -> ap.Namespace:
     parser = CustomArgumentParser(std_msg=std_msg)
 
+    parser.add_argument("--verbose",
+                        type=bool,
+                        help="turn on verbose mode",
+                        default=False)
+
     parser.add_argument("secrets_filename",
                         type=str,
                         help="JSON file with secrets: rtsp_user, rtsp_pw, spaces_key, spaces_access_key")
@@ -115,9 +103,8 @@ def parse_args(std_msg: StdMsg) -> ap.Namespace:
                         help="Length of time in seconds before a new image is uploaded",
                         type=int,
                         default=60)
-
     parser.add_argument("--metadata_image_alt",
-                        help="alt text for img tag in browseer",
+                        help="alt text for img tag in browser",
                         type=str,
                         default="Mazama Snow Stake")
 
@@ -205,14 +192,6 @@ class Filenames:
         std_msg.info(f"Spaces image URL: {self.spaces_image_url}")
         std_msg.info(f"Spaces metadata URL: {self.spaces_metadata_url}")
 
-        # return types.SimpleNamespace(
-        #     local_image=script_dir.joinpath(args.image_name_prefix + capture_local_filename).with_suffix(".jpg"),
-        #     local_metadata=script_dir.joinpath(args.metadata_name).with_suffix(".json"),
-        #     spaces_image_url=f"https://{args.bucket}.{args.region}.digitaloceanspaces.com/{args.upload_image_name}",
-        #     spaces_metadata_url=f"https://{args.bucket}.{args.region}.digitaloceanspaces.com/{args.upload_metadata_name}",
-        #     spaces_endpoint_url=f"https://{args.region}.digitaloceanspaces.com"
-        # )
-
 
 def save_image(std_msg: StdMsg, filenames: Filenames, capture):
     # Ensure all required inputs exist
@@ -287,6 +266,8 @@ def upload_to_spaces(std_msg: StdMsg, args: ap.Namespace, secrets: Secrets, file
         except be.ClientError as e:
             std_msg.error(f"Error occurred uploading image: ({e})")
 
+        std_msg.info(f"Image uploaded successfully: {args.upload_image_name}")
+
         try:
             client.upload_file(filenames.local_metadata, args.bucket, args.upload_metadata_name,
                                ExtraArgs={"ContentType": "application/json",
@@ -294,7 +275,9 @@ def upload_to_spaces(std_msg: StdMsg, args: ap.Namespace, secrets: Secrets, file
                                           "ACL": "public-read"})
 
         except be.ClientError as e:
-            std_msg.error(f"Excception occurred uploading metadata: ({e})")
+            std_msg.error(f"Exception occurred uploading metadata: ({e})")
+
+        std_msg.info(f"Metadata uploaded successfully: {args.upload_metadata_name}")
 
         client.close()
 
@@ -307,6 +290,7 @@ def upload_to_spaces(std_msg: StdMsg, args: ap.Namespace, secrets: Secrets, file
 def main():
     std_msg = StdMsg()
     args = parse_args(std_msg)
+    std_msg.set_verbose(args.verbose)
     secrets = Secrets(std_msg, args)
     capture = Capture(std_msg, args, secrets)
     filenames = Filenames(std_msg, args, capture)
