@@ -22,10 +22,8 @@ class StdMsg:
 
         # Standardize the logger format for output
         handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%m/%d/%Y-%H:%M:%S"
-        )
+        formatter = logging.Formatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                                      datefmt="%m/%d/%Y-%H:%M:%S")
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         self.logger.propagate = False  # Prevent duplicate logs
